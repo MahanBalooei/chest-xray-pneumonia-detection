@@ -203,7 +203,12 @@ TorchXRayVision:
 > Cohen, J. P., Viviano, J. D., Bertrand, P., et al. (2022). *TorchXRayVision: A library of chest X-ray datasets and models*. Medical Imaging with Deep Learning.
 
 ---
+## Contact
 
+For questions about the technical implementation, contact:
+
+- **Mahan Balooei** — mahan.balooei@studio.unibo.it
+---
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
