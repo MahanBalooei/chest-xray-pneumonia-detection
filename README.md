@@ -1,214 +1,107 @@
-# Chest X-Ray Pneumonia Detection — Transfer Learning Pipeline
+# Pneumonia Detection on Chest X-Rays with Transfer Learning
 
-> Binary pneumonia classifier trained on chest X-rays using ResNet50, EfficientNetB0, and DenseNet-121 XRV. Includes class-imbalance handling, three decision-threshold strategies, ensemble, TTA, and GradCAM. **Best model: DenseNet-121 XRV (max-MCC strategy).**
+A course project in which I compare three pretrained CNNs for telling pneumonia from normal chest X-rays, pick decision thresholds on a validation split, and check what happens when those thresholds meet the official test set. The whole pipeline is a single notebook that runs on Google Colab.
 
----
+The short version: all three models look excellent on the validation split and noticeably worse on the test set, and the gap is the most useful thing this project shows.
 
-## Table of Contents
+## Results on the test set (624 images: 390 pneumonia, 234 normal)
 
-- [Overview](#overview)
-- [Dataset](#dataset)
-- [Project Structure](#project-structure)
-- [Methodology](#methodology)
-  - [EDA & Preprocessing](#eda--preprocessing)
-  - [Models & Fine-Tuning Strategy](#models--fine-tuning-strategy)
-  - [Threshold Selection](#threshold-selection)
-  - [Supplementary Analyses](#supplementary-analyses)
-- [Results](#results)
-- [Limitations](#limitations)
-- [Getting Started](#getting-started)
-- [Requirements](#requirements)
+Thresholds were chosen on the validation split to maximise MCC (strategy C below) and then applied once to the test set.
 
----
+| Model | Pretraining | Threshold | Accuracy | AUROC | AUPRC | MCC | Recall, pneumonia | Recall, normal | FN | FP |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| ResNet50 | ImageNet | 0.511 | 86.4% | 0.943 | 0.934 | 0.722 | 0.997 | 0.641 | 1 | 84 |
+| EfficientNetB0 | ImageNet | 0.263 | 83.0% | 0.927 | 0.935 | 0.654 | 0.997 | 0.551 | 1 | 105 |
+| DenseNet-121 (TorchXRayVision) | Chest X-rays | 0.367 | **87.5%** | 0.954 | **0.967** | **0.739** | 0.985 | **0.692** | 6 | **72** |
+| Ensemble, ResNet50 + DenseNet-121 | | 0.303 | 84.5% | **0.964** | 0.964 | 0.683 | 0.997 | 0.590 | 1 | 96 |
 
-## Overview
+FN: pneumonia images predicted normal. FP: normal images predicted pneumonia. The figures come from one training run with seed 42.
 
-Pneumonia is a leading cause of mortality worldwide. Chest X-rays are the standard diagnostic tool, but interpretation requires trained radiologists and is subject to inter-reader variability. This project builds and compares automated classifiers that could serve as a screening aid—flagging suspicious images for priority review.
+### What the numbers say
 
-Three pretrained CNN backbones are compared under identical experimental conditions:
+- **Every model misses almost no pneumonia but flags many normal images.** Pneumonia recall is 0.98 to 1.00 everywhere, while normal recall sits between 0.55 and 0.69. In practice the models lean towards "pneumonia" whenever they are unsure.
+- **DenseNet-121 pretrained on chest X-rays is the best single model.** It has the highest MCC (0.739), the highest AUPRC and the fewest false positives (72), at the cost of 6 missed pneumonia cases instead of 1.
+- **The ensemble ranks images best but classifies them worse.** Averaging ResNet50 and DenseNet-121 gives the highest AUROC (0.964), but at its chosen threshold its MCC (0.683) is below both of its members'. Its threshold, picked on the validation split, sits too low for the test set.
+- **Test-time augmentation helps ranking, not decisions.** For ResNet50, averaging five augmented views raised AUROC from 0.943 to 0.959 and AUPRC from 0.934 to 0.952, but MCC stayed essentially flat (0.712 vs 0.709 at the strategy A threshold), because the threshold was not re-tuned for the averaged probabilities.
 
-| Model | Pretraining | Input |
-|---|---|---|
-| ResNet50 | ImageNet | RGB 224×224 |
-| EfficientNetB0 | ImageNet | RGB 224×224 |
-| DenseNet-121 XRV | Chest X-ray datasets (CheXpert, MIMIC-CXR, NIH ChestX-ray14) | Grayscale 224×224 |
+### The validation/test gap
 
-All models are trained on the same stratified data split, evaluated on the same untouched test set, and assessed under three decision-threshold strategies to make the FP/FN trade-off explicit.
+| Model | MCC on validation split | MCC on test set |
+|---|---:|---:|
+| ResNet50 | 0.975 | 0.722 |
+| EfficientNetB0 | 0.975 | 0.654 |
+| DenseNet-121 (TorchXRayVision) | 0.901 | 0.739 |
+| Ensemble | 0.962 | 0.683 |
 
----
+The validation split comes from the official training folder, and the test set is a separate folder. Two things probably explain most of the drop:
 
-## Dataset
+1. **The split is by image, not by patient.** The training folder contains several images from the same patient, so the same person can appear in both my training and validation subsets. That makes the validation scores optimistic, and the thresholds tuned on them fit the training patients rather than new ones.
+2. **The test set has a different class balance and is known to differ from the training folder.** Pneumonia is 74% of the training and validation images but 62.5% of the test images.
 
-**Chest X-Ray Images (Pneumonia)** — Kermany et al. (2018), available on [Kaggle](https://www.kaggle.com/datasets/paultimothymooney/chest-xray-pneumonia).
+It is telling that the DenseNet pretrained on chest X-rays scores lowest on validation but best on test. The two ImageNet models appear to have fitted the training distribution more tightly, and that did not carry over.
 
-| Split | NORMAL | PNEUMONIA | Total | Imbalance ratio |
-|---|---|---|---|---|
-| Train | ~1,341 | ~3,875 | ~5,216 | ~2.9× |
-| Val (official) | 8 | 8 | 16 | 1.0× |
-| Test | 234 | 390 | 624 | 1.7× |
+## Data
 
-> **Note:** The official 16-image validation folder is too small for reliable model selection. A stratified 80/20 split is carved from the training folder instead. The official `val/` directory is never used for model decisions.
+[Chest X-Ray Images (Pneumonia)](https://www.kaggle.com/datasets/paultimothymooney/chest-xray-pneumonia), Kermany et al., Cell 2018. Paediatric chest X-rays from a single hospital.
 
----
+| Folder | Normal | Pneumonia | Total |
+|---|---:|---:|---:|
+| train | 1,341 | 3,875 | 5,216 |
+| val (official) | 8 | 8 | 16 |
+| test | 234 | 390 | 624 |
 
-## Project Structure
+The official validation folder has only 16 images, so I did not use it. Instead I split the training folder 80/20, stratified by class: 4,173 images for training and 1,043 for validation. The test folder was used only for the final evaluation.
 
-```
-chest-xray-pneumonia-detection/
-├── chest_xray_pneumonia_detection.ipynb   # Full pipeline notebook
-├── LICENSE
-└── README.md
-```
+## Method
 
-Model checkpoints (`resnet50_best.pth`, `efficientnet_b0_best.pth`, `densenet121_xrv_best.pth`) are saved locally during training and are not tracked in the repository.
+**Models.** ResNet50 and EfficientNetB0 with ImageNet weights, and DenseNet-121 from TorchXRayVision, which was pretrained on several large chest X-ray collections (NIH, CheXpert, MIMIC-CXR and others).
 
----
+**Preprocessing.** For the ImageNet models: grayscale images copied to three channels, resized to 256 and centre-cropped to 224, ImageNet normalisation. For DenseNet-121: TorchXRayVision's own crop, resize and intensity scaling to [-1024, 1024], single channel. Training augmentation for all: horizontal flip, rotation up to 10° and brightness jitter.
 
-## Methodology
+**Training.** Two phases: first the classification head alone (lr 1e-3), then fine-tuning. ResNet50 and EfficientNetB0 were fine-tuned end to end (lr 1e-4). For DenseNet-121 only the last dense block and final normalisation layer were unfrozen (lr 1e-5), to keep the chest X-ray features it already has. AdamW with weight decay 1e-4 and cosine learning-rate decay in each phase. A weighted sampler balanced the classes during training.
 
-### EDA & Preprocessing
+The models were not trained in exactly the same way. The ImageNet models used cross-entropy with label smoothing (0.1) and kept the epoch with the best validation MCC. DenseNet-121 used binary cross-entropy and kept the epoch with the best validation AUROC. So the comparison is fair in data and evaluation, but not a controlled comparison of pretraining alone.
 
-Before training, exploratory analysis was performed to directly inform pipeline decisions:
+**Thresholds.** Instead of the default 0.5, three thresholds were chosen on the validation split for each model:
 
-- **Class imbalance (~74.3% PNEUMONIA in training)** → `WeightedRandomSampler` during training; per-class precision/recall/F1/MCC reported; three threshold strategies evaluated
-- **Tiny official validation set (16 images)** → stratified 80/20 split from training folder; test set held out until final evaluation
-- **Variable image sizes and aspect ratios** → resize to 256 then center-crop to 224×224
-- **Near-identical class-mean intensities** → rules out simple intensity thresholds; confirms need for learned features
-- **Subtle visual differences between classes** → transfer learning preferred over training from scratch; GradCAM as qualitative sanity check
+- A: maximise F1 for pneumonia
+- B: keep pneumonia recall at or above 0.97, then maximise MCC
+- C: maximise MCC
 
-Two preprocessing pipelines are used:
+For most models B and C landed on the same threshold. All three are reported in the notebook; the table above uses C. For DenseNet-121, strategy B gives 5 false negatives and 77 false positives (MCC 0.727).
 
-- **ImageNet pipeline** (ResNet50, EfficientNetB0): grayscale → 3-channel replication → ImageNet normalization (`mean=[0.485, 0.456, 0.406]`, `std=[0.229, 0.224, 0.225]`); light augmentation during training (horizontal flip, ±10° rotation, brightness jitter)
-- **XRV pipeline** (DenseNet-121 XRV): grayscale → `XRayCenterCrop` + `XRayResizer` → XRV intensity normalization (`[-1024, 1024]`); same augmentation
-
-### Models & Fine-Tuning Strategy
-
-All three models use a **two-phase fine-tuning** approach:
-
-| Phase | Layers trained | LR |
-|---|---|---|
-| Phase 1 | Classification head only | 1e-3 |
-| Phase 2 (ResNet/EffNet) | Entire backbone | 1e-4 |
-| Phase 2 (DenseNet XRV) | Head + `denseblock4` + `norm5` only | 1e-5 |
-
-DenseNet-121 XRV uses **partial fine-tuning** in Phase 2 — earlier blocks stay frozen to preserve domain-specific radiological representations from XRV pretraining.
-
-Training details:
-- **Loss:** `CrossEntropyLoss` with label smoothing ε=0.1 (ResNet/EffNet); `BCEWithLogitsLoss` (DenseNet)
-- **Optimizer:** AdamW with weight_decay=1e-4
-- **Scheduler:** CosineAnnealingLR per phase
-- **Early stopping:** validation MCC (ResNet/EffNet), validation AUROC (DenseNet); patience=5
-
-### Threshold Selection
-
-The default 0.5 threshold is not used. Three strategies are evaluated **on the validation set only**, then applied once to the test set:
-
-| Strategy | Criterion | Use case |
-|---|---|---|
-| A | Maximize PNEUMONIA F1-score | Balanced positive-class performance |
-| B | PNEUMONIA recall ≥ 0.97, then max MCC | Screening — minimize missed PNEUMONIA |
-| C | Maximize MCC directly | Most balanced overall performance |
-
-### Supplementary Analyses
-
-- **False negative / false positive inspection:** most-confident misclassified images are visualized to surface failure modes
-- **Ensemble:** equal-weight probability averaging of ResNet50 + DenseNet-121 XRV; threshold re-selected on averaged validation probabilities
-- **Test-Time Augmentation (TTA):** 5-view averaging for ResNet50 (flip, rotation, brightness, combined); compared against standard inference at Strategy A threshold
-- **GradCAM:** gradient-weighted class activation maps on `layer4[-1]` (ResNet50), `features[-1]` (EfficientNetB0), and `denseblock4` (DenseNet-121 XRV) as a spatial sanity check
-
----
-
-## Results
-
-### Key metrics on the test set (Strategy C — Max MCC)
-
-| Model | Accuracy | AUROC | MCC | Recall-PNEUMONIA | Recall-NORMAL | FN | FP |
-|---|---|---|---|---|---|---|---|
-| ResNet50 | — | — | — | — | — | — | — |
-| EfficientNetB0 | — | — | — | — | — | — | — |
-| **DenseNet-121 XRV** | **best** | **best** | **best** | high | **best** | low | **lowest** |
-| Ensemble (R50+DN) | — | highest | lower | — | — | — | higher |
-
-> Run the notebook to populate exact numbers — values depend on your training run and random seed.
-
-### Conclusions
-
-- **DenseNet-121 XRV + Strategy C** is the recommended model: highest MCC, best NORMAL recall, lowest false-positive count, while maintaining high PNEUMONIA recall. Domain-specific XRV pretraining appears to provide a more suitable feature initialization for this task than ImageNet pretraining.
-- **Strategy B** is the preferred operating point when minimizing missed PNEUMONIA-labeled cases is the priority; it guarantees PNEUMONIA recall ≥ 0.97 on the validation set at the cost of more false positives.
-- **Ensemble** achieves the highest AUROC and AUPRC, confirming that ResNet50 and DenseNet capture complementary information, but does not outperform DenseNet-121 XRV in thresholded classification due to uncalibrated equal-weight averaging.
-- **TTA** improved AUROC/AUPRC for ResNet50 but did not substantially improve thresholded metrics, since the threshold was not re-tuned for TTA-transformed probabilities.
-
----
+**Other analyses.** The most confident false negatives and false positives are shown for each model. Grad-CAM maps (ResNet50 `layer4`, EfficientNetB0 last feature block, DenseNet-121 `denseblock4`) were used as a rough check that the models look at the lungs. Nobody with radiology training reviewed these maps, so they are a sanity check and nothing more.
 
 ## Limitations
 
-- **Single data source:** results come from one pediatric hospital dataset. Generalization to different scanners, patient populations, or acquisition protocols is unknown.
-- **Train/test class-proportion mismatch:** PNEUMONIA makes up ~74.3% of the training/validation pool but only 62.5% of the test set. Thresholds may be slightly biased toward over-predicting PNEUMONIA at test time.
-- **No external validation:** the model was not evaluated on an independent dataset from a different institution.
-- **No radiologist review:** failure-case images and GradCAM heatmaps were not reviewed by a trained radiologist. Visual interpretations are hypotheses, not clinical findings.
-- **Threshold choice is context-dependent:** the optimal FN/FP trade-off depends on downstream care pathways and patient risk — factors a single validation metric cannot capture.
-- **Pneumonia subtype not modeled:** bacterial and viral pneumonia have different imaging presentations and treatments. The dataset does not distinguish between them.
-- **Single random seed (42):** performance was not evaluated over multiple seeds or cross-validation splits.
+- Image-level rather than patient-level split, as discussed above. A patient-level split would give more honest validation scores and probably better thresholds.
+- One random seed and one split, so no confidence intervals. Differences of a few points in MCC between models should not be over-read.
+- Single hospital, paediatric patients only, no external test set.
+- The labels do not separate bacterial from viral pneumonia.
+- This is a study of methods on a public dataset, not a tool fit for clinical use.
 
----
+## Running it
 
-## Getting Started
-
-### 1. Clone the repository
+The notebook is written for Google Colab with a GPU. It installs TorchXRayVision itself and downloads the dataset with `kagglehub`, so you need Kaggle credentials (`~/.kaggle/kaggle.json`) if you run it outside Colab.
 
 ```bash
 git clone https://github.com/MahanBalooei/chest-xray-pneumonia-detection.git
 cd chest-xray-pneumonia-detection
-```
-
-### 2. Install dependencies
-
-```bash
 pip install torch torchvision torchxrayvision scikit-learn matplotlib seaborn pandas numpy Pillow kagglehub opencv-python
-```
-
-### 3. Run the notebook
-
-```bash
 jupyter notebook chest_xray_pneumonia_detection.ipynb
 ```
 
-The notebook will automatically download the dataset from Kaggle using `kagglehub`. Make sure your Kaggle API credentials are configured (`~/.kaggle/kaggle.json`).
+The committed notebook includes the outputs of the run reported above. Model checkpoints are saved during training but are not included in the repository.
 
----
+## References
 
-## Requirements
+- Kermany D.S. et al. (2018). Identifying medical diagnoses and treatable diseases by image-based deep learning. *Cell* 172(5), 1122–1131.
+- Cohen J.P. et al. (2022). TorchXRayVision: a library of chest X-ray datasets and models. *Medical Imaging with Deep Learning*.
 
-| Package | Purpose |
-|---|---|
-| `torch` / `torchvision` | Model training and transforms |
-| `torchxrayvision` | DenseNet-121 pretrained on chest X-rays |
-| `scikit-learn` | Metrics (MCC, AUROC, AUPRC, PR curves) |
-| `matplotlib` / `seaborn` | Visualizations |
-| `pandas` / `numpy` | Data handling |
-| `Pillow` | Image loading |
-| `kagglehub` | Automatic dataset download |
-| `opencv-python` | GradCAM heatmap resizing |
-
----
-
-## Citation
-
-If you use the dataset, please cite:
-
-> Kermany, D. S., Goldbaum, M., Cai, W., et al. (2018). *Identifying Medical Diagnoses and Treatable Diseases by Image-Based Deep Learning*. Cell, 172(5), 1122–1131.
-
-TorchXRayVision:
-
-> Cohen, J. P., Viviano, J. D., Bertrand, P., et al. (2022). *TorchXRayVision: A library of chest X-ray datasets and models*. Medical Imaging with Deep Learning.
-
----
 ## Contact
 
-For questions about the technical implementation, contact:
+Mahan Balooei, mahan.balooei@studio.unibo.it
 
-- **Mahan Balooei** — mahan.balooei@studio.unibo.it
----
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+MIT. See `LICENSE`.
